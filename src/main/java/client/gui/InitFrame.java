@@ -67,6 +67,7 @@ public class InitFrame extends JFrame {
         loginFrame.add(passWord);
         loginFrame.add(passwordText);
         //loginFrame.add(nickName);
+        loginFrame.add(warn);
         loginFrame.add(nickNameText);
         loginFrame.add(loginButton);
         loginFrame.add(registerButton);
@@ -104,7 +105,7 @@ public class InitFrame extends JFrame {
         regPassword.setPreferredSize(dim);
         regPassword.setBounds(100,100,250,30);
 
-        JLabel warn = new JLabel();
+//        JLabel warn = new JLabel();
         warn.setBounds(80,120,250,60);
         JButton button = new JButton(ProtocolConstant.CONFIRM);
         button.setBounds(150, 170, 130, 40);
@@ -166,8 +167,8 @@ public class InitFrame extends JFrame {
         return accountText.getText();
     }
 
-    public char[] getPassword(){
-        return passwordText.getPassword();
+    public String getPassword(){
+        return String.valueOf(passwordText.getPassword());
     }
 
     public String getRegNickName(){

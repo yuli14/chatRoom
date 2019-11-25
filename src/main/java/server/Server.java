@@ -10,11 +10,12 @@ import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.nio.ByteBuffer;
 import java.nio.channels.*;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
 import static client.ProtocolConstant.*;
-
+import static utils.Msg.encodeString;
 public class Server {
     private ServerGui serverGui;
     private Map<String, UserSocket> connectedClient;
@@ -37,11 +38,13 @@ public class Server {
 //            e.printStackTrace();
 //        }
 //    }
-    public static void main(String[] args){
-
+    public static void main(String[] args) throws IOException {
+        Server server = new Server("localhost", 8090);
+        server.launchServer();
     }
     public Server(String address, int port){
         this.listenAddress = new InetSocketAddress(address, port);
+
     }
 
     public void launchServer() throws IOException {
@@ -51,10 +54,13 @@ public class Server {
         serverGui = new ServerGui();
         serverGui.initServerFrame();
         connectedClient = new HashMap<>();
+        nameToSocket = new HashMap<>();
+        socketToName = new HashMap<>();
         userInfos = new UserInfos();
         userInfos.readAllFromFile();
 
         try {
+            //register the server on the selector first
             this.selector = Selector.open();
             ServerSocketChannel serverSocketChannel = ServerSocketChannel.open();
             serverSocketChannel.configureBlocking(false);
@@ -74,7 +80,7 @@ public class Server {
 //        }
 
         while(true){
-            serverGui.setClientCountArea("number of connected sockets are: " + connectedClient.size());
+            serverGui.setClientCountArea("number of connected sockets are: " + nameToSocket.size());
 
             //accept a new socket
             //if it's register, we add to our channel
@@ -86,8 +92,9 @@ public class Server {
             boolean alreadyWrote = false;
             while(keys.hasNext()){
                 //handle one by one
+                //? is that ok
                 SelectionKey selectedKey = (SelectionKey) keys.next();
-                String NickNameAndPassWord = (String)selectedKey.attachment();
+//                String NickNameAndPassWord = (String)selectedKey.attachment();
                 //todo
                 //remove to prevent iterate again
                 keys.remove();
@@ -96,12 +103,15 @@ public class Server {
                     continue;
                 }
                 if(selectedKey.isAcceptable()){
+                    System.out.println("server accept");
                     this.accept(selectedKey);
                 }
                 else if(selectedKey.isReadable()){
+                    System.out.println("server read");
                     this.read(selectedKey);
                 }
                 else if(selectedKey.isWritable()){
+                    System.out.println("server write");
                     this.write(selectedKey);
                     alreadyWrote = true;
 
@@ -119,6 +129,9 @@ public class Server {
         try {
             SocketChannel socketChannel = serverChannel.accept();
             socketChannel.configureBlocking(false);
+            //ready to read from server
+
+            System.out.println("try to register read");
             socketChannel.register(selector, SelectionKey.OP_READ);
         } catch (IOException e) {
             e.printStackTrace();
@@ -127,31 +140,57 @@ public class Server {
     public void read(SelectionKey key){
         //read from server
         SocketChannel socketChannel = (SocketChannel) key.channel();
-        ByteBuffer buffer = ByteBuffer.allocate(1024);
-        StringBuffer sb = new StringBuffer();
+        ByteBuffer buffer = ByteBuffer.allocate(4096);
+        StringBuilder sb = new StringBuilder();
         int c = 0;
         try {
             while((c = socketChannel.read(buffer)) > 0){
                 buffer.flip();
                 int size = buffer.remaining();
                 byte[] bytes = new byte[size];
-                buffer.get(bytes, 0, size);
-                sb.append(new String(bytes));
+                buffer.get(bytes);
+                sb.append(new String(bytes, StandardCharsets.UTF_8));
+
             }
             if(c == -1){
                 System.out.println("log: client closes");
+                key.cancel();
                 socketChannel.close();
                 return;
             }else{
-                System.out.println("log: msg-> " + sb);
-                handleMsg(sb.toString(), key);
+                System.out.println("log: msg-> ");
+                String str = sb.toString();
+                if(socketToName.containsKey(key)){
+                    String toRemove = socketToName.get(key);
+                    nameToSocket.remove(toRemove);
+                    socketToName.remove(key);
+                    System.out.println("removed key");
+                }
+
+                System.out.println("server received " + str);
+                handleMsg(str, key);
             }
         } catch (IOException e) {
             e.printStackTrace();
         }
     }
+    public boolean validatePassWord(String username, String password){
+        Map<String, User> userMap = userInfos.getUserMap();
+        return (userMap.containsKey(username) && userMap.get(username).getPassword().equals(password));
 
 
+    }
+
+    public void doWrite(String message, SocketChannel sc){
+        ByteBuffer buffer = ByteBuffer.allocate(1024);
+        buffer.put(message.getBytes());
+        buffer.flip();
+        try {
+            sc.write(buffer);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
 
     public void write(SelectionKey key){
         //write to server
@@ -189,18 +228,60 @@ public class Server {
 
     //handle
     private void handleMsg(String message, SelectionKey key) {
+        //applied in read message
         //handle message sent from client
         String[] decodedMsg = decodeString(message);
+        for(String s: decodedMsg){
+            System.out.println("decode get " + s);
+        }
+
         String cmd = decodedMsg[0];
         String nickName = decodedMsg[1];
+        //get the current socket from the key
+
         if(cmd.equals(LOGIN)){
+            System.out.println("tried login");
             String password = decodedMsg[2];
             Map<String, User> userMap = userInfos.getUserMap();
+            System.out.println(userMap.size());
             //SEND BACK IF ALLOWED TO LOGIN OR NOT
-            Msg msg = new Msg();
-            if(userMap.containsKey(nickName)){
-                msg.setWho(nickName);//
+            SocketChannel channel = (SocketChannel) key.channel();
+            String errorMessage = null;
+            if(nameToSocket.containsKey(nickName)){
+                //msg.setWho(nickName);//
+                System.out.println("duplicate");
+                errorMessage = encodeString(DUPLICATE, nickName, "found duplicate");
+
             }
+            else if(!userMap.containsKey(nickName) ||((userMap.containsKey(nickName) && (!validatePassWord(nickName, password))))){
+                System.out.println(nickName);
+                System.out.println(password);
+                System.out.println(userMap.get(nickName).getPassword());
+                System.out.println("info error");
+
+                errorMessage = encodeString(NOT_VALID, nickName, "pass word not correct");
+
+
+            }
+            if(errorMessage != null){
+                System.out.println("wrote error message");
+                doWrite(errorMessage, channel);
+            }
+            //if success?
+            //register it on hashmap
+            else if(userMap.containsKey(nickName) && (userMap.containsKey(nickName) && (validatePassWord(nickName, password)))){
+                String successMessage = encodeString(VALID, nickName, "success");
+                doWrite(successMessage, channel);
+                //register
+                System.out.println("yo");
+                nameToSocket.put(nickName, key);
+                socketToName.put(key, nickName);
+
+            }
+            else{
+                System.out.println("dont");
+            }
+
             //return userMap.containsKey(nickName) && new String(userMap.get(nickName).getPassword()).equals(password);
         }
         else if(cmd.equals(SEND_PRIVATE_MSG)){
@@ -244,7 +325,7 @@ public class Server {
     }
 
 
-    private void register(byte[] bytes, UserSocket userSocket){
-
-    }
+//    private void register(byte[] bytes, UserSocket userSocket){
+//
+//    }
 }
